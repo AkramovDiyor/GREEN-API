@@ -1,66 +1,50 @@
-import { useState, useEffect, useCallback } from 'react';
-import { sendMessage as apiSendMessage, receiveNotification, deleteNotification } from '../api'; 
+// src/hooks/useGreenAPI.js
+import { useState, useEffect } from 'react';
+import { sendMessageAPI, receiveNotificationAPI, deleteNotificationAPI } from '../api/greenApi';
 
 export const useGreenAPI = (auth) => {
+  // Храним сообщения как словарь: { '7999@c.us': [msg1, msg2], '7998@c.us': [msg1] }
   const [messagesByChat, setMessagesByChat] = useState({});
-  const [isLoading, setIsLoading] = useState(false);
 
-  const sendMessage = useCallback(async (chatId, text) => {
-    if (!auth || !chatId) return;
-    setIsLoading(true);
-    try {
-      const response = await apiSendMessage(auth.idInstance, auth.apiTokenInstance, chatId, text);
-      
-      if (response.idMessage) {
-        const newMessage = {
-          id: response.idMessage,
-          text,
-          sender: 'me',
-          timestamp: Date.now(),
-        };
-        
-        setMessagesByChat((prev) => ({
-          ...prev,
-          [chatId]: [...(prev[chatId] || []), newMessage],
-        }));
-      }
-    } catch (error) {
-      console.error('Ошибка отправки:', error);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [auth]);
-
+  // Глобальный поллинг: работает, пока есть авторизация, независимо от открытого чата
   useEffect(() => {
     if (!auth) return;
 
     const poll = async () => {
       try {
-        const data = await receiveNotification(auth.idInstance, auth.apiTokenInstance);
+        const data = await receiveNotificationAPI(auth.idInstance, auth.apiTokenInstance);
 
         if (data && data.receiptId) {
           const body = data.body || {};
           const text = body.textMessage || body.message;
-          const isText = body.typeMessage === 'textMessage' || !!text;
           const chatId = body.chatId;
 
-          if (isText && chatId && text) {
-            const incomingMessage = {
+          // Обрабатываем только текстовые сообщения, где есть текст и chatId
+          if ((body.typeMessage === 'textMessage' || !!text) && text && chatId) {
+            const newMessage = {
               id: data.receiptId.toString(),
               text: text,
               sender: 'them',
               timestamp: body.timestampMessage ? body.timestampMessage * 1000 : Date.now(),
             };
-            
-            setMessagesByChat((prev) => ({
-              ...prev,
-              [chatId]: [...(prev[chatId] || []), incomingMessage],
-            }));
+
+            setMessagesByChat((prev) => {
+              const chatMessages = prev[chatId] || [];
+              // Защита от дублей
+              if (chatMessages.find((m) => m.id === newMessage.id)) return prev;
+              
+              return {
+                ...prev,
+                [chatId]: [...chatMessages, newMessage],
+              };
+            });
           }
 
-          await deleteNotification(auth.idInstance, auth.apiTokenInstance, data.receiptId);
+          // Всегда удаляем уведомление из очереди после обработки
+          await deleteNotificationAPI(auth.idInstance, auth.apiTokenInstance, data.receiptId);
         }
       } catch (error) {
+        // Игнорируем ошибки сети при поллинге, чтобы не спамить консоль
       }
     };
 
@@ -68,5 +52,29 @@ export const useGreenAPI = (auth) => {
     return () => clearInterval(intervalId);
   }, [auth]);
 
-  return { messagesByChat, sendMessage, isLoading };
+  const sendMessage = async (chatId, text) => {
+    if (!auth || !chatId || !text) return;
+
+    const success = await sendMessageAPI(auth.idInstance, auth.apiTokenInstance, chatId, text);
+    
+    if (success) {
+      const newMessage = {
+        id: Date.now().toString(),
+        text,
+        sender: 'me',
+        timestamp: Date.now(),
+      };
+
+      setMessagesByChat((prev) => {
+        const chatMessages = prev[chatId] || [];
+        return {
+          ...prev,
+          [chatId]: [...chatMessages, newMessage],
+        };
+      });
+    }
+    return success;
+  };
+
+  return { messagesByChat, sendMessage };
 };

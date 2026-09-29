@@ -1,9 +1,9 @@
+// src/App.jsx
 import { useState, useEffect, useRef } from 'react';
 import { AuthScreen } from './components/AuthScreen';
 import { useGreenAPI } from './hooks/useGreenAPI';
 import { formatPhone, formatTime } from './utils';
 import { Send, Plus, User, LogOut, Phone } from 'lucide-react';
-import './index.css';
 
 export default function App() {
   const [auth, setAuth] = useState(null);
@@ -13,22 +13,68 @@ export default function App() {
   const [showNewChat, setShowNewChat] = useState(false);
   const [newPhone, setNewPhone] = useState('');
   
-  const { messagesByChat, sendMessage, isLoading } = useGreenAPI(auth);
   const messagesEndRef = useRef(null);
-
-  const currentMessages = currentChat ? (messagesByChat[currentChat.phone] || []) : [];
 
   useEffect(() => {
     const savedAuth = localStorage.getItem('green_api_auth');
     if (savedAuth) setAuth(JSON.parse(savedAuth));
-
+    
     const savedChats = localStorage.getItem('green_api_chats');
     if (savedChats) setChats(JSON.parse(savedChats));
   }, []);
 
+  // Передаем только auth, поллинг теперь глобальный
+  const { messagesByChat, sendMessage } = useGreenAPI(auth);
+
+  // Берем сообщения ТОЛЬКО для текущего открытого чата
+  const currentChatPhone = currentChat ? formatPhone(currentChat.phone) : null;
+  const currentMessages = currentChatPhone ? (messagesByChat[currentChatPhone] || []) : [];
+
+  // Автоскролл
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [currentMessages]);
+  }, [currentMessages, currentChatPhone]);
+
+  // Синхронизация сайдбара: если пришло сообщение в любой чат, обновляем его "последнее сообщение"
+  useEffect(() => {
+    if (!auth || Object.keys(messagesByChat).length === 0) return;
+
+    setChats((prevChats) => {
+      let hasChanges = false;
+      const updatedChats = prevChats.map((chat) => {
+        const msgs = messagesByChat[chat.phone];
+        if (msgs && msgs.length > 0) {
+          const lastMsg = msgs[msgs.length - 1];
+          if (chat.lastMessage !== lastMsg.text || chat.timestamp !== lastMsg.timestamp) {
+            hasChanges = true;
+            return { ...chat, lastMessage: lastMsg.text, timestamp: lastMsg.timestamp };
+          }
+        }
+        return chat;
+      });
+
+      // Если пришло сообщение в чат, которого еще нет в сайдбаре (например, нам написали первыми), добавляем его
+      Object.keys(messagesByChat).forEach((chatId) => {
+        if (!updatedChats.find((c) => c.phone === chatId)) {
+          const msgs = messagesByChat[chatId];
+          const lastMsg = msgs[msgs.length - 1];
+          updatedChats.push({
+            phone: chatId,
+            name: `+${chatId.replace('@c.us', '')}`,
+            lastMessage: lastMsg.text,
+            timestamp: lastMsg.timestamp,
+          });
+          hasChanges = true;
+        }
+      });
+
+      if (hasChanges) {
+        localStorage.setItem('green_api_chats', JSON.stringify(updatedChats));
+        return updatedChats;
+      }
+      return prevChats;
+    });
+  }, [messagesByChat, auth]);
 
   const handleLogout = () => {
     localStorage.removeItem('green_api_auth');
@@ -39,35 +85,37 @@ export default function App() {
   const createNewChat = () => {
     if (!newPhone.trim()) return;
     const formatted = formatPhone(newPhone);
-    const newChat = {
-      phone: formatted,
-      name: `+${formatted.replace('@c.us', '')}`,
-      timestamp: Date.now()
+    const newChat = { 
+      phone: formatted, 
+      name: `+${formatted.replace('@c.us', '')}`, 
+      timestamp: Date.now() 
     };
-
-    const updatedChats = [newChat, ...chats.filter(c => c.phone !== formatted)];
+    
+    const updatedChats = [newChat, ...chats.filter((c) => c.phone !== formatted)];
     setChats(updatedChats);
     localStorage.setItem('green_api_chats', JSON.stringify(updatedChats));
-
+    
     setCurrentChat(newChat);
     setNewPhone('');
     setShowNewChat(false);
   };
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!inputText.trim() || !currentChat) return;
     
-    sendMessage(currentChat.phone, inputText.trim());
-
-    const updatedChats = chats.map(c =>
-      c.phone === currentChat.phone
-        ? { ...c, lastMessage: inputText.trim(), timestamp: Date.now() }
-        : c
-    );
-    setChats(updatedChats);
-    localStorage.setItem('green_api_chats', JSON.stringify(updatedChats));
-
-    setInputText('');
+    const success = await sendMessage(currentChatPhone, inputText.trim());
+    
+    if (success) {
+      // Обновляем сайдбар сразу после отправки
+      const updatedChats = chats.map((c) => 
+        c.phone === currentChatPhone 
+          ? { ...c, lastMessage: inputText.trim(), timestamp: Date.now() } 
+          : c
+      );
+      setChats(updatedChats);
+      localStorage.setItem('green_api_chats', JSON.stringify(updatedChats));
+      setInputText('');
+    }
   };
 
   if (!auth) return <AuthScreen onAuth={setAuth} />;
@@ -79,16 +127,16 @@ export default function App() {
         <div className="p-4 border-b border-gray-200 flex justify-between items-center bg-white">
           <h2 className="font-bold text-lg text-gray-800">Чаты</h2>
           <div className="flex gap-2">
-            <button
-              onClick={() => setShowNewChat(!showNewChat)}
-              className="p-2 hover:bg-gray-100 rounded-full transition"
+            <button 
+              onClick={() => setShowNewChat(!showNewChat)} 
+              className="p-2 hover:bg-gray-100 rounded-full transition" 
               title="Новый чат"
             >
               <Plus className="w-5 h-5 text-primary" />
             </button>
-            <button
-              onClick={handleLogout}
-              className="p-2 hover:bg-red-50 rounded-full transition"
+            <button 
+              onClick={handleLogout} 
+              className="p-2 hover:bg-red-50 rounded-full transition" 
               title="Выйти"
             >
               <LogOut className="w-5 h-5 text-red-500" />
@@ -106,8 +154,8 @@ export default function App() {
               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm mb-2 focus:ring-2 focus:ring-primary outline-none"
               onKeyDown={(e) => e.key === 'Enter' && createNewChat()}
             />
-            <button
-              onClick={createNewChat}
+            <button 
+              onClick={createNewChat} 
               className="w-full bg-primary text-white py-2 rounded-lg text-sm font-medium hover:bg-primaryHover transition"
             >
               Начать чат
@@ -119,13 +167,14 @@ export default function App() {
           {chats.length === 0 ? (
             <div className="p-8 text-center text-gray-400 text-sm">Нет активных чатов</div>
           ) : (
-            chats.map((chat) => (
+            // Сортируем чаты: те, где есть новые сообщения (или более поздний timestamp), идут выше
+            [...chats].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)).map((chat) => (
               <div
                 key={chat.phone}
                 onClick={() => setCurrentChat(chat)}
                 className={`p-4 flex items-center gap-3 cursor-pointer transition border-l-4 ${
-                  currentChat?.phone === chat.phone
-                    ? 'bg-blue-50 border-primary'
+                  currentChat?.phone === chat.phone 
+                    ? 'bg-blue-50 border-primary' 
                     : 'bg-white border-transparent hover:bg-gray-50'
                 }`}
               >
@@ -142,6 +191,7 @@ export default function App() {
         </div>
       </div>
 
+      {/* ПРАВАЯ КОЛОНКА: Окно текущего чата */}
       <div className="flex-1 flex flex-col bg-bgChat">
         {currentChat ? (
           <>
@@ -196,7 +246,7 @@ export default function App() {
                 />
                 <button
                   onClick={handleSend}
-                  disabled={isLoading || !inputText.trim()}
+                  disabled={!inputText.trim()}
                   className="bg-primary hover:bg-primaryHover disabled:bg-gray-300 text-white p-3 rounded-xl transition flex-shrink-0"
                 >
                   <Send className="w-5 h-5" />
